@@ -894,7 +894,8 @@ def test_peer_auth_ident_map(bouncer):
 
 def test_qa_gh1103__put_in_order(bouncer):
     """
-    Check that the pgbouncer handles correctly multiple credentials with one name (isue #1103).
+    Check that the pgbouncer correctly handles multiple credentials
+    with the same name (issue #1103).
     """
 
     config = f"""

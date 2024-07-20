@@ -928,3 +928,66 @@ def test_qa_gh1103__put_in_order(bouncer):
                 cur.execute("select 1")
 
     print("OK!")
+
+
+def test_auth_user_with_same_forced_user(bouncer):
+    """
+    Check that the pgbouncer correctly handles correctly multiple credentials
+    with the same name (isue #1103).
+    """
+
+    config = f"""
+        [databases]
+        * = host={bouncer.pg.host} port={bouncer.pg.port} user=postgres min_pool_size=2
+        [pgbouncer]
+        listen_addr = {bouncer.host}
+        listen_port = {bouncer.port}
+        auth_type = trust
+        auth_user = postgres
+        auth_dbname = postgres
+        logfile = {bouncer.log_path}
+        auth_file = {bouncer.auth_path}
+        admin_users = pgbouncer
+    """
+
+    with bouncer.run_with_config(config):
+        # Let's get an error "no such user"
+        with pytest.raises(psycopg.OperationalError, match="no such user"):
+            bouncer.conn(dbname="dummydb2", user="dummyuser2", password="dummypswd2")
+        # Let's wait a few seconds for the janitor to kick in and crash pgbouncer
+        time.sleep(2)
+        # Now we will try to connect with OK parameters
+        with bouncer.conn(dbname="p3", user="postgres", password="asdasd") as cn:
+            with cn.cursor() as cur:
+                cur.execute("select 1")
+
+
+def test_auth_user_at_db_level_with_same_forced_user(bouncer):
+    """
+    Check that the pgbouncer correctly handles multiple credentials
+    with the same name (issue #1103).
+    """
+
+    config = f"""
+        [databases]
+        * = host={bouncer.pg.host} port={bouncer.pg.port} auth_user=postgres user=postgres min_pool_size=2
+        [pgbouncer]
+        listen_addr = {bouncer.host}
+        listen_port = {bouncer.port}
+        auth_type = trust
+        auth_dbname = postgres
+        logfile = {bouncer.log_path}
+        auth_file = {bouncer.auth_path}
+        admin_users = pgbouncer
+    """
+
+    with bouncer.run_with_config(config):
+        # Let's get an error "no such user"
+        with pytest.raises(psycopg.OperationalError, match="no such user"):
+            bouncer.conn(dbname="dummydb2", user="dummyuser2", password="dummypswd2")
+        # Let's wait a few seconds for the janitor to kick in and crash pgbouncer
+        time.sleep(2)
+        # Now we will try to connect with OK parameters
+        with bouncer.conn(dbname="p3", user="postgres", password="asdasd") as cn:
+            with cn.cursor() as cur:
+                cur.execute("select 1")

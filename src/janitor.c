@@ -158,7 +158,7 @@ static void launch_recheck(PgPool *pool)
 		/* send test query, wait for result */
 		slog_debug(server, "P: checking: %s", q);
 		change_server_state(server, SV_TESTED);
-		SEND_generic(res, server, 'Q', "s", q);
+		SEND_generic(res, server, PqMsg_Query, "s", q);
 		if (!res)
 			disconnect_server(server, false, "test query failed");
 	} else {
@@ -778,7 +778,8 @@ void janitor_setup(void)
 {
 	/* launch maintenance */
 	event_assign(&full_maint_ev, pgb_event_base, -1, EV_PERSIST, do_full_maint, NULL);
-	event_add(&full_maint_ev, &full_maint_period);
+	if (event_add(&full_maint_ev, &full_maint_period) < 0)
+		log_warning("event_add failed: %s", strerror(errno));
 }
 
 void kill_pool(PgPool *pool)

@@ -164,6 +164,15 @@ static bool send_client_authreq(PgSocket *client)
 	return res;
 }
 
+/*
+ * Returns true if the client is currently trying to send an auth query to the
+ * server.
+ */
+bool sending_auth_query(PgSocket *client)
+{
+	return client->wait_for_user_conn || client->wait_for_user;
+}
+
 static void start_auth_query(PgSocket *client, const char *username)
 {
 	int res;
@@ -179,8 +188,8 @@ static void start_auth_query(PgSocket *client, const char *username)
 		disconnect_client(client, true, "no memory for authentication pool");
 		return;
 	}
+	client->wait_for_user_conn = true;
 	if (!find_server(client)) {
-		client->wait_for_user_conn = true;
 		return;
 	}
 	slog_noise(client, "doing auth_conn query: %s", auth_query);
@@ -554,6 +563,7 @@ bool set_pool(PgSocket *client, const char *dbname, const char *username, const 
 			return false;
 
 		if (!client->login_user_credentials || client->login_user_credentials->dynamic_passwd) {
+			PgGlobalUser *global_user;
 			/*
 			 * If the login user specified by the client
 			 * does not exist or if it has no entry in auth_file,
@@ -562,9 +572,12 @@ bool set_pool(PgSocket *client, const char *dbname, const char *username, const 
 			 * see if the global auth_user is set and use that.
 			 */
 			if (!client->db->auth_user_credentials && cf_auth_user) {
-				client->db->auth_user_credentials = find_global_credentials(cf_auth_user);
-				if (!client->db->auth_user_credentials)
-					client->db->auth_user_credentials = add_global_credentials(cf_auth_user, "");
+				client->db->auth_user_credentials = find_or_add_new_global_credentials(cf_auth_user, "");
+				if (client->db->auth_user_credentials == NULL) {
+					slog_error(client, "set_pool(): failed to allocate a new global credentials");
+					disconnect_client(client, true, "bouncer resources exhaustion");
+					return false;
+				}
 			}
 			if (client->db->auth_user_credentials) {
 				if (client->db->fake) {
@@ -588,8 +601,22 @@ bool set_pool(PgSocket *client, const char *dbname, const char *username, const 
 
 			slog_info(client, "no such user: %s", username);
 			client->login_user_credentials = calloc(1, sizeof(*client->login_user_credentials));
+
+			/*
+			 * For users that we are already tracking, we want to
+			 * track this correctly as a connection count. But for
+			 * users that we don't know about at all, we don't want
+			 * to create a new global user. That's why we use
+			 * find_global_user instead of
+			 * find_or_add_new_global_user.
+			 */
+			global_user = find_global_user(username);
+			if (global_user)
+				client->login_user_credentials->global_user = global_user;
+
 			if (!check_db_connection_count(client))
 				return false;
+
 			client->login_user_credentials->mock_auth = true;
 			safe_strcpy(client->login_user_credentials->name, username, sizeof(client->login_user_credentials->name));
 			if (!check_user_connection_count(client)) {
@@ -717,6 +744,7 @@ bool handle_auth_query_response(PgSocket *client, PktHdr *pkt)
 			return false;
 		return true;
 	case PqMsg_ErrorResponse:
+		log_server_error("S: error in auth_query", pkt);
 		disconnect_server(server, false, "error response from auth_query");
 		return false;
 	default:
@@ -791,7 +819,12 @@ static bool set_startup_options(PgSocket *client, const char *options)
 		 * GUC_REPORT flag, specifically extra_float_digits which is a
 		 * configuration that is set by CREATE SUBSCRIPTION in the
 		 * options parameter.
+		 *
+		 * First free it, because set_startup_options might be called
+		 * multiple times in some cases. One of these being when
+		 * auth_user is enabled.
 		 */
+		free(client->startup_options);
 		client->startup_options = strdup(options);
 		if (!client->startup_options)
 			disconnect_client(client, true, "out of memory");
@@ -1000,6 +1033,7 @@ static bool decide_startup_pool(PgSocket *client, PktHdr *pkt)
 		if (!res) {
 			pktbuf_free(buf);
 			disconnect_client(client, false, "unable to send protocol negotiation packet");
+			return false;
 		}
 	}
 
@@ -1204,7 +1238,7 @@ static bool handle_client_startup(PgSocket *client, PktHdr *pkt)
 			return false;
 		}
 
-		if (client->pool && !client->wait_for_user_conn && !client->wait_for_user) {
+		if (client->pool && !sending_auth_query(client)) {
 			disconnect_client(client, true, "client re-sent startup pkt");
 			return false;
 		}

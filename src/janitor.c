@@ -27,6 +27,8 @@
 /* do full maintenance 3x per second */
 static struct timeval full_maint_period = {0, USEC / 3};
 static struct event full_maint_ev;
+extern bool any_user_level_server_timeout_set;
+extern bool any_user_level_client_timeout_set;
 
 /* close all sockets in server list */
 static void close_server_list(struct StatList *sk_list, const char *reason)
@@ -378,19 +380,29 @@ static void pool_client_maint(PgPool *pool)
 	struct List *item, *tmp;
 	usec_t now = get_cached_time();
 	PgSocket *client;
+	PgGlobalUser *user;
 	usec_t age;
+	usec_t effective_client_idle_timeout;
 
 	/* force client_idle_timeout */
-	if (cf_client_idle_timeout > 0) {
+	if (cf_client_idle_timeout > 0 || any_user_level_client_timeout_set) {
 		statlist_for_each_safe(item, &pool->active_client_list, tmp) {
 			client = container_of(item, PgSocket, head);
 			Assert(client->state == CL_ACTIVE);
 			if (client->link)
 				continue;
-			if (now - client->request_time > cf_client_idle_timeout)
+
+			user = client->login_user_credentials->global_user;
+			effective_client_idle_timeout = cf_client_idle_timeout;
+
+			if (user->client_idle_timeout > 0)
+				effective_client_idle_timeout = user->client_idle_timeout;
+
+			if (now - client->request_time > effective_client_idle_timeout)
 				disconnect_client(client, true, "client_idle_timeout");
 		}
 	}
+
 
 	/* force timeouts for waiting queries */
 	if (cf_query_timeout > 0 || cf_query_wait_timeout > 0) {
@@ -510,15 +522,17 @@ static void check_pool_size(PgPool *pool)
 
 	Assert(pool_pool_size(pool) >= 0);
 
-	while (many > 0) {
-		server = first_socket(&pool->used_server_list);
-		if (!server)
-			server = first_socket(&pool->idle_server_list);
-		if (!server)
-			break;
-		disconnect_server(server, true, "too many servers in the pool");
-		many--;
-		cur--;
+	if (pool_pool_size(pool) > 0) {
+		while (many > 0) {
+			server = first_socket(&pool->used_server_list);
+			if (!server)
+				server = first_socket(&pool->idle_server_list);
+			if (!server)
+				break;
+			disconnect_server(server, true, "too many servers in the pool");
+			many--;
+			cur--;
+		}
 	}
 
 	/* launch extra connections to satisfy min_pool_size */
@@ -565,9 +579,13 @@ static void pool_server_maint(PgPool *pool)
 	}
 
 	/* handle query_timeout and idle_transaction_timeout */
-	if (cf_query_timeout > 0 || cf_idle_transaction_timeout > 0) {
+	if (cf_query_timeout > 0 || cf_idle_transaction_timeout > 0 || any_user_level_timeout_set) {
 		statlist_for_each_safe(item, &pool->active_server_list, tmp) {
 			usec_t age_client, age_server;
+			usec_t effective_query_timeout;
+			usec_t effective_idle_transaction_timeout;
+			usec_t user_query_timeout;
+			usec_t user_idle_transaction_timeout;
 
 			server = container_of(item, PgSocket, head);
 			Assert(server->state == SV_ACTIVE);
@@ -585,11 +603,23 @@ static void pool_server_maint(PgPool *pool)
 			age_client = now - server->link->request_time;
 			age_server = now - server->request_time;
 
-			if (cf_query_timeout > 0 && age_client > cf_query_timeout) {
+			user_idle_transaction_timeout = server->login_user_credentials->global_user->idle_transaction_timeout;
+			user_query_timeout = server->login_user_credentials->global_user->query_timeout;
+
+			effective_idle_transaction_timeout = cf_idle_transaction_timeout;
+			effective_query_timeout = cf_query_timeout;
+
+			if (user_idle_transaction_timeout > 0)
+				effective_idle_transaction_timeout = user_idle_transaction_timeout;
+
+			if (user_query_timeout > 0)
+				effective_query_timeout = user_query_timeout;
+
+			if (effective_query_timeout > 0 && age_client > effective_query_timeout) {
 				disconnect_server(server, true, "query timeout");
-			} else if (cf_idle_transaction_timeout > 0 &&
+			} else if (effective_idle_transaction_timeout > 0 &&
 				   server->idle_tx &&
-				   age_server > cf_idle_transaction_timeout) {
+				   age_server > effective_idle_transaction_timeout) {
 				disconnect_server(server, true, "idle transaction timeout");
 			}
 		}

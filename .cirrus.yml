@@ -157,12 +157,12 @@ task:
 task:
   name: FreeBSD
   freebsd_instance:
-    image_family: freebsd-14-1
+    image_family: freebsd-14-2
   env:
     HAVE_IPV6_LOCALHOST: yes
     USE_SUDO: true
   setup_script:
-    - pkg install -y autoconf automake bash gmake hs-pandoc libevent libtool pkgconf postgresql12-server postgresql12-contrib python devel/py-pip sudo
+    - pkg install -y autoconf automake bash gmake hs-pandoc libevent libtool pkgconf postgresql${PGVERSION}-server postgresql${PGVERSION}-contrib python devel/py-pip sudo
     - pip install -r requirements.txt
     - kldload pf
     - echo 'anchor "pgbouncer_test/*"' >> /etc/pf.conf
@@ -232,7 +232,7 @@ task:
     #     MSYSTEM: MINGW32
   setup_script:
     - choco install -y --no-progress msys2
-    - sh -l -c "pacman --noconfirm -S --needed base-devel ${MINGW_PACKAGE_PREFIX}-gcc ${MINGW_PACKAGE_PREFIX}-libevent ${MINGW_PACKAGE_PREFIX}-openssl ${MINGW_PACKAGE_PREFIX}-postgresql autoconf automake libtool ${MINGW_PACKAGE_PREFIX}-python ${MINGW_PACKAGE_PREFIX}-python-pip zip"
+    - sh -l -c "pacman --noconfirm -S --needed base-devel ${MINGW_PACKAGE_PREFIX}-gcc ${MINGW_PACKAGE_PREFIX}-libevent ${MINGW_PACKAGE_PREFIX}-openssl ${MINGW_PACKAGE_PREFIX}-postgresql autoconf automake libtool pkg-config ${MINGW_PACKAGE_PREFIX}-python ${MINGW_PACKAGE_PREFIX}-python-pip zip"
     - sh -l -c 'pip install -r requirements.txt'
     - echo 127.0.0.1 localhost >> c:\Windows\System32\Drivers\etc\hosts
     - sh -l -c 'echo "127.0.0.1   localhost" >> /etc/hosts'

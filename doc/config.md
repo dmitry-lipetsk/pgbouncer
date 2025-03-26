@@ -1246,10 +1246,10 @@ Only enforced if at least one of the following is true:
 * there is at least one client connected to the pool
 
 
-### reserve_pool
+### reserve_pool_size
 
-Set additional connections for this database. If not set, `reserve_pool_size` is
-used.
+Set additional connections for this database. If not set, the global `reserve_pool_size`
+is used. For backwards compatibilty reasons `reserve_pool` is an alias for this option.
 
 ### connect_query
 
@@ -1338,6 +1338,11 @@ messages to the client, but neither will it accept any provided password.
 Set the maximum size of pools for all connections from this user.  If not set,
 the database or `default_pool_size` is used.
 
+### reserve_pool_size
+
+Set the number of additional connections to allow to a pool for this user. If
+not set, the database configuration or the global `reserve_pool_size` is used.
+
 ### pool_mode
 
 Set the pool mode to be used for all connections from this user. If not set, the
@@ -1348,8 +1353,28 @@ database or default `pool_mode` is used.
 Configure a maximum for the user of server connections (i.e. all pools with the user will
 not have more than this many server connections).
 
+### query_timeout
+
+Set the maximum number of seconds that a user query can run for.
+If set this timeout overrides the server level query_timeout described above.
+
+### idle_transaction_timeout
+
+Set the maximum number of seconds that a user can have an idle transaction open.
+If set this timeout overides the server level idle_transaction_timeout
+described above.
+
+### client_idle_timeout
+
+Set the maximum amount of time in seconds that a client is allowed to idly connect to
+the pgbouncer instance. If set this timeout overrides the server level client_idle_timeout
+described above.
+
+Please note that this is a potentially dangeous timeout.
+
 ### max_user_client_connections
 Configure a maximum for the user of client connections. This is the user equivalent ofthe max_client_conn setting.
+
 
 ## Section [peers]
 
@@ -1368,7 +1393,7 @@ that it was meant for.  By peering them these cancellation requests eventually
 end up at the right process. A more in-depth explanation is provided in this
 [recording of a conference talk][cancel-problem-video].
 
-[cancel-problem-video]: https://www.youtube.com/watch?v=M585FfbboNA
+[cancel-problem-video]: https://www.youtube.com/watch?v=X-nCHcZ6vQU
 
 The section contains key=value lines like
 
@@ -1603,7 +1628,10 @@ Example of a secure function for `auth_query`:
         WHERE usename = i_username INTO uname, phash;
         RETURN;
     END;
-    $$ LANGUAGE plpgsql SECURITY DEFINER;
+    $$ LANGUAGE plpgsql
+       SECURITY DEFINER
+       -- Set a secure search_path: trusted schema(s), then 'pg_temp'.
+       SET search_path = pg_catalog, pg_temp;
     REVOKE ALL ON FUNCTION pgbouncer.user_lookup(text) FROM public, pgbouncer;
     GRANT EXECUTE ON FUNCTION pgbouncer.user_lookup(text) TO pgbouncer;
 

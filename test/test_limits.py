@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 
 import psycopg
@@ -432,6 +433,64 @@ def test_max_user_client_connections_negative(
         conn.close()
 
 
+def test_user_client_count_db_connect_fail(pg, bouncer) -> None:
+    test_user = "maxedout3"
+    test_dbname = "user_passthrough"
+
+    pg.nossl_access(dbname="p0", auth_type="reject", user=test_user)
+    pg.ssl_access(dbname="p0", auth_type="reject", user=test_user)
+    pg.reload()
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    user = next(user for user in users if user["name"] == test_user)
+    assert user["current_client_connections"] == 0
+
+    connect_args = {"dbname": test_dbname, "user": test_user}
+    with pytest.raises(
+        psycopg.OperationalError, match="pg_hba.conf rejects connection"
+    ):
+        _ = bouncer.conn(**connect_args)
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    user = next(user for user in users if user["name"] == test_user)
+    assert user["current_client_connections"] == 0
+
+
+def test_user_client_count_db_connect_fail_2(bouncer) -> None:
+    test_user = "pswcheck_not_in_auth_file"
+    test_dbname = "user_passthrough"
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    user = next(user for user in users if user["name"] == test_user)
+    assert user["current_client_connections"] == 0
+
+    connect_args = {"dbname": test_dbname, "user": test_user}
+    with pytest.raises(psycopg.OperationalError, match="authentication failed"):
+        _ = bouncer.conn(**connect_args)
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    user = next(user for user in users if user["name"] == test_user)
+    assert user["current_client_connections"] == 0
+
+
+def test_user_client_count_db_connect_fail_3(bouncer) -> None:
+    test_user = "non_existent_user"
+    test_dbname = "user_passthrough"
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    assert len([user for user in users if user["name"] == test_user]) == 0
+
+    connect_args = {"dbname": test_dbname, "user": test_user}
+    with pytest.raises(psycopg.OperationalError, match="authentication failed"):
+        _ = bouncer.conn(**connect_args)
+
+    users = bouncer.admin("SHOW USERS", row_factory=dict_row)
+    # We don't expect non-existent users which cannot authentiticate to show up
+    # in the stats at all. This would just pollute the stats output with people
+    # making typos or attackers trying random user accounts.
+    assert len([user for user in users if user["name"] == test_user]) == 0
+
+
 def test_min_pool_size_with_lower_max_user_connections(bouncer):
     # The p0x in test.init has min_pool_size set to 5. This should make
     # the PgBouncer try to create a pool for maxedout2 user of size 5 after a
@@ -475,6 +534,63 @@ async def test_reserve_pool_size(pg, bouncer):
         assert pg.connection_count("p1") == 5
         await asyncio.sleep(8)
         assert pg.connection_count("p1") == 8
+        await result
+
+
+@pytest.mark.asyncio
+async def test_user_reserve_pool_size(pg, bouncer):
+    bouncer.admin("set reserve_pool_timeout = 2")
+
+    # Disable tls to get more consistent timings
+    bouncer.admin("set server_tls_sslmode = disable")
+
+    with bouncer.log_contains("taking connection from reserve_pool", times=2):
+        # respoolsize1 user has a pool_size of 1 and reserve_pool_size of 2
+        # this means 1 connection should happen immediately while 2 out of
+        # the 3 remaining connections happen after reserve_pool_timeout
+        result = bouncer.asleep(10, dbname="p0a", user="respoolsize1", times=4)
+        await asyncio.sleep(1)
+        assert pg.connection_count(dbname="p0", users=("respoolsize1",)) == 1
+        await asyncio.sleep(8)
+        assert pg.connection_count(dbname="p0", users=("respoolsize1",)) == 3
+        await result
+
+
+@pytest.mark.asyncio
+async def test_database_reserve_pool_size(pg, bouncer):
+    bouncer.admin("set reserve_pool_timeout = 2")
+
+    # Disable tls to get more consistent timings
+    bouncer.admin("set server_tls_sslmode = disable")
+
+    with bouncer.log_contains("taking connection from reserve_pool", times=2):
+        # p0 db has a pool_size of 2 and reserve_pool_size of 2
+        # this means 2 connections should happen immediately while 2 out of
+        # the 3 remaining connections happen after reserve_pool_timeout
+        result = bouncer.asleep(10, dbname="p0", user="bouncer", times=5)
+        await asyncio.sleep(1)
+        assert pg.connection_count(dbname="p0", users=("bouncer",)) == 2
+        await asyncio.sleep(8)
+        assert pg.connection_count(dbname="p0", users=("bouncer",)) == 4
+        await result
+
+
+@pytest.mark.asyncio
+async def test_database_reserve_pool_size_old_param(pg, bouncer):
+    bouncer.admin("set reserve_pool_timeout = 2")
+
+    # Disable tls to get more consistent timings
+    bouncer.admin("set server_tls_sslmode = disable")
+
+    with bouncer.log_contains("taking connection from reserve_pool", times=2):
+        # p0a db has a pool_size of 2 and reserve_pool of 2
+        # this means 2 connections should happen immediately while 2 out of
+        # the 3 remaining connections happen after reserve_pool_timeout
+        result = bouncer.asleep(10, dbname="p0a", user="bouncer", times=5)
+        await asyncio.sleep(1)
+        assert pg.connection_count(dbname="p0", users=("bouncer",)) == 2
+        await asyncio.sleep(8)
+        assert pg.connection_count(dbname="p0", users=("bouncer",)) == 4
         await result
 
 

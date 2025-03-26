@@ -30,6 +30,9 @@
  * ConnString parsing
  */
 
+bool any_user_level_timeout_set;
+bool any_user_level_client_timeout_set;
+
 /* parse parameter name before '=' */
 static char *cstr_get_key(char *p, char **dst_p)
 {
@@ -334,6 +337,9 @@ bool parse_database(void *base, const char *name, const char *connstr)
 		} else if (strcmp("min_pool_size", key) == 0) {
 			min_pool_size = atoi(val);
 		} else if (strcmp("reserve_pool", key) == 0) {
+			/* We continue supporting this option for backwards compatibility */
+			res_pool_size = atoi(val);
+		} else if (strcmp("reserve_pool_size", key) == 0) {
 			res_pool_size = atoi(val);
 		} else if (strcmp("max_db_connections", key) == 0) {
 			max_db_connections = atoi(val);
@@ -461,10 +467,9 @@ bool parse_database(void *base, const char *name, const char *connstr)
 	}
 
 	if (auth_username != NULL) {
-		db->auth_user_credentials = find_global_credentials(auth_username);
-		if (!db->auth_user_credentials) {
-			db->auth_user_credentials = add_global_credentials(auth_username, "");
-		}
+		db->auth_user_credentials = find_or_add_new_global_credentials(auth_username, "");
+		if (!db->auth_user_credentials)
+			goto fail;
 	} else if (db->auth_user_credentials) {
 		db->auth_user_credentials = NULL;
 	}
@@ -497,9 +502,12 @@ bool parse_user(void *base, const char *name, const char *connstr)
 	struct CfValue cv;
 	int pool_mode = POOL_INHERIT;
 	int pool_size = -1;
+	int res_pool_size = -1;
 	int max_user_connections = -1;
+	usec_t idle_transaction_timeout = 0;
+	usec_t query_timeout = 0;
+	usec_t client_idle_timeout = 0;
 	int max_user_client_connections = -1;
-
 
 	cv.value_p = &pool_mode;
 	cv.extra = (const void *)pool_mode_map;
@@ -527,8 +535,19 @@ bool parse_user(void *base, const char *name, const char *connstr)
 			}
 		} else if (strcmp("pool_size", key) == 0) {
 			pool_size = atoi(val);
+		} else if (strcmp("reserve_pool_size", key) == 0) {
+			res_pool_size = atoi(val);
 		} else if (strcmp("max_user_connections", key) == 0) {
 			max_user_connections = atoi(val);
+		} else if (strcmp("idle_transaction_timeout", key) == 0) {
+			any_user_level_timeout_set = true;
+			idle_transaction_timeout = atoi(val) * USEC;
+		} else if (strcmp("query_timeout", key) == 0) {
+			any_user_level_timeout_set = true;
+			query_timeout = atoi(val) * USEC;
+		} else if (strcmp("client_idle_timeout", key) == 0) {
+			any_user_level_client_timeout_set = true;
+			client_idle_timeout = atoi(val) * USEC;
 		} else if (strcmp("max_user_client_connections", key) == 0) {
 			max_user_client_connections = atoi(val);
 		} else {
@@ -537,18 +556,19 @@ bool parse_user(void *base, const char *name, const char *connstr)
 		}
 	}
 
-	user = find_global_user(name);
+	user = find_or_add_new_global_user(name, "");
 	if (!user) {
-		user = add_global_user(name, "");
-		if (!user) {
-			log_error("cannot create user, no memory?");
-			goto fail;
-		}
+		log_error("cannot create user, no memory?");
+		goto fail;
 	}
 
 	user->pool_mode = pool_mode;
 	user->pool_size = pool_size;
+	user->res_pool_size = res_pool_size;
 	user->max_user_connections = max_user_connections;
+	user->idle_transaction_timeout = idle_transaction_timeout;
+	user->query_timeout = query_timeout;
+	user->client_idle_timeout = client_idle_timeout;
 	user->max_user_client_connections = max_user_client_connections;
 
 	free(tmp_connstr);
@@ -601,11 +621,15 @@ static void unquote_add_authfile_user(const char *username, const char *password
 	copy_quoted(real_user, username, sizeof(real_user));
 	copy_quoted(real_passwd, password, sizeof(real_passwd));
 
-	user = add_global_user(real_user, real_passwd);
+	user = find_or_add_new_global_user(real_user, real_passwd);
 	if (!user) {
 		log_warning("cannot create user, no memory");
 		return;
 	}
+	if (strcmp(user->credentials.passwd, real_passwd) != 0) {
+		user = update_global_user_passwd(user, real_passwd);
+	}
+
 	user->credentials.dynamic_passwd = false;
 }
 
